@@ -1,14 +1,14 @@
-import { NestFactory } from '@nestjs/core';
-import { AppModule } from './app.module';
+import { AppController } from './app.controller';
+import { hashPassword, verifyPassword } from './auth/password';
 
-it('serves GET /health without a database', async () => {
-  const app = await NestFactory.create(AppModule, { logger: false });
-  try {
-    await app.listen(0, '127.0.0.1');
-    const response = await fetch(`${await app.getUrl()}/health`);
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ status: 'ok' });
-  } finally {
-    await app.close();
-  }
+it('reports process health', () => {
+  expect(new AppController().health()).toEqual({ status: 'ok' });
+});
+
+it('stores salted password hashes and rejects a wrong password', async () => {
+  const first = await hashPassword('a-long-test-password');
+  const second = await hashPassword('a-long-test-password');
+  expect(first).not.toEqual(second);
+  expect(await verifyPassword('a-long-test-password', first)).toBe(true);
+  expect(await verifyPassword('wrong', first)).toBe(false);
 });

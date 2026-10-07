@@ -6,11 +6,15 @@ services:
     restart: unless-stopped
     init: true
     mem_limit: 256m
+    env_file: .env
     environment:
       PORT: 3000
       NODE_OPTIONS: --max-old-space-size=128
     ports:
       - '127.0.0.1:3000:3000'
+    depends_on:
+      db:
+        condition: service_healthy
     healthcheck:
       test:
         [
@@ -28,3 +32,39 @@ services:
       options:
         max-size: 10m
         max-file: '2'
+
+  db:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    mem_limit: 128m
+    env_file: .env
+    command:
+      [
+        postgres,
+        -c,
+        shared_buffers=16MB,
+        -c,
+        max_connections=10,
+        -c,
+        work_mem=2MB,
+        -c,
+        maintenance_work_mem=16MB,
+      ]
+    ports:
+      - '127.0.0.1:5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test:
+        [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '2'
+
+volumes:
+  postgres_data:

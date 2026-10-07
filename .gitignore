@@ -39,6 +39,7 @@ lerna-debug.log*
 .env*
 !.env.example
 /.data/
+/portfolio-backup.sql
 
 # temp directory
 .temp

@@ -119,12 +119,12 @@ npx eslint src --no-fix
 TEST_DATABASE_URL=postgresql://USER:PASSWORD@127.0.0.1:5432/portfolio_test npm run test:integration
 ```
 
-테스트는 실제 PostgreSQL에서 JWT 서명/만료/claims, 토큰 폐기, CRUD, 공개 필터, 버전 충돌, 순서 변경의 롤백, 재시드 보존, migration 중복 실행 방지·기존 DB 채택·부분 스키마 거절과 DDL 롤백, 동시 비밀번호 변경, Swagger 참조와 응답 계약을 확인합니다.
+통합 테스트는 CI에서 자동 실행하지 않고, DB 스키마·쿼리를 수정할 때 위 명령으로 수동 실행합니다. 실제 PostgreSQL에서 JWT 서명/만료/claims, 토큰 폐기, CRUD, 공개 필터, 버전 충돌, 순서 변경의 롤백, 재시드 보존, migration 중복 실행 방지·기존 DB 채택·부분 스키마 거절과 DDL 롤백, 동시 비밀번호 변경, Swagger 참조와 응답 계약을 확인합니다.
 운영 의존성은 NestJS 11을 유지하며 Swagger의 js-yaml을 5.4.3으로 고정해 알려진 YAML 처리 취약점을 해결합니다.
 
 ## 자동 배포
 
-`main`에 push하거나 GitHub Actions의 **Build and deploy**를 `main`에서 수동 실행하면 단위·PostgreSQL 통합 테스트 → `linux/amd64` 이미지 GHCR 발행 → DB 준비·마이그레이션 → API 교체 → 헬스 체크 순서로 실행합니다.
+`main`에 push하거나 GitHub Actions의 **Build and deploy**를 `main`에서 수동 실행하면 빌드·린트·단위 테스트 → `linux/amd64` 이미지 GHCR 발행 → DB 준비·마이그레이션 → API 교체 → 헬스 체크 순서로 실행합니다.
 서버의 `~/portfolio-be`에 Compose 파일을 전송하고 Actions에 작성된 SSH 명령으로 해당 커밋의 `sha-<전체 커밋 SHA>` 이미지를 실행합니다. 빌드는 서버에서 하지 않습니다.
 배포는 순차 실행되며, 헬스 체크에 실패하면 Actions도 실패합니다. 자동 롤백은 없습니다.
 

@@ -7,17 +7,18 @@ import type {
   SchemaObject,
 } from '@nestjs/swagger';
 import type { NestExpressApplication } from '@nestjs/platform-express';
-import { DataSource } from 'typeorm';
+import { count, eq } from 'drizzle-orm';
 import { AppModule } from './app.module';
 import { hashPassword } from './auth/password';
 import { configureApp } from './setup';
-import { getDataSourceOptions } from './database/options';
+import { createDatabase } from './database/database';
+import { runMigrations } from './database/migrate';
 import {
-  AdminAccount,
-  AdminSession,
-  Project,
-  SiteContent,
-} from './database/entities';
+  adminAccounts,
+  adminSessions,
+  projects,
+  siteContent,
+} from './database/schema';
 import { AuthService } from './auth/auth.service';
 import * as passwords from './auth/password';
 import { seed } from './database/seed';
@@ -49,7 +50,7 @@ type LoginResponse = {
 
 describe('실제 PostgreSQL API 계약', () => {
   let app: NestExpressApplication;
-  let db: DataSource;
+  let db: ReturnType<typeof createDatabase>;
   let base: string;
   let token = '';
   const origin = 'http://localhost:3000';
@@ -103,13 +104,13 @@ describe('실제 PostgreSQL API 계약', () => {
     process.env.DATABASE_URL = url;
     process.env.CORS_ORIGINS = origin;
     process.env.JWT_SECRET = '0123456789abcdef'.repeat(4);
-    db = await new DataSource(getDataSourceOptions()).initialize();
-    await db.runMigrations();
-    await db.query(
+    db = createDatabase();
+    await runMigrations(db);
+    await db.$client.query(
       'TRUNCATE admin_sessions, admin_accounts, experiences, tech_groups, projects, site_content CASCADE',
     );
     await seed(db);
-    await db.getRepository(AdminAccount).insert({
+    await db.insert(adminAccounts).values({
       email: 'admin@example.com',
       passwordHash: await hashPassword(password),
       isActive: true,
@@ -125,15 +126,24 @@ describe('실제 PostgreSQL API 계약', () => {
 
   afterAll(async () => {
     if (app) await app.close();
-    if (db?.isInitialized) await db.destroy();
+    if (db) await db.$client.end();
   });
 
   it('초기 데이터와 응답을 검증하고 재시드가 편집 내용을 덮어쓰지 않는다', async () => {
-    const history = await db.query<{ name: string }[]>(
-      'SELECT name FROM migrations ORDER BY id',
-    );
-    expect(history).toEqual([{ name: 'InitialSchema1780857600000' }]);
-    expect(await db.runMigrations()).toEqual([]);
+    const history = await db.$client.query<{
+      hash: string;
+      created_at: string;
+    }>('SELECT hash, created_at FROM drizzle.__drizzle_migrations ORDER BY id');
+    expect(history.rows).toHaveLength(1);
+    expect(history.rows[0].hash).toMatch(/^[a-f0-9]{64}$/);
+    await runMigrations(db);
+    expect(
+      (
+        await db.$client.query(
+          'SELECT hash, created_at FROM drizzle.__drizzle_migrations ORDER BY id',
+        )
+      ).rows,
+    ).toEqual(history.rows);
     const health = await request('/health');
     expect(health.body).toEqual({ success: true, data: { status: 'ok' } });
     const home = await request<HomeResponse>('/api/v1/home');
@@ -142,28 +152,35 @@ describe('실제 PostgreSQL API 계약', () => {
     expect(home.body.data.experiences).toHaveLength(5);
     expect(home.body.data.techGroups).toHaveLength(6);
     expect(home.body.data.projects).toHaveLength(3);
-    const projects = await request<ProjectDto[]>('/api/v1/projects');
-    expect(projects.body.data).toHaveLength(6);
-    expect(projects.body.data.every((project) => !('content' in project))).toBe(
-      true,
-    );
-    for (const project of await db.getRepository(Project).find()) {
+    const projectList = await request<ProjectDto[]>('/api/v1/projects');
+    expect(projectList.body.data).toHaveLength(6);
+    expect(
+      projectList.body.data.every((project) => !('content' in project)),
+    ).toBe(true);
+    for (const project of await db.select().from(projects)) {
       const detail = await request<ProjectDto>(
         `/api/v1/projects/${project.slug}`,
       );
       expect(ProjectSchema.safeParse(detail.body.data).success).toBe(true);
       expect(detail.body.data.content).toEqual(project.content);
     }
-    const original = await db
-      .getRepository(SiteContent)
-      .findOneByOrFail({ id: 1 });
+    const [original] = await db
+      .select()
+      .from(siteContent)
+      .where(eq(siteContent.id, 1));
     expect(SiteDataSchema.safeParse(original.data).success).toBe(true);
-    await db.getRepository(SiteContent).update(1, { version: 9 });
+    await db
+      .update(siteContent)
+      .set({ version: 9 })
+      .where(eq(siteContent.id, 1));
     await seed(db);
     expect(
-      (await db.getRepository(SiteContent).findOneByOrFail({ id: 1 })).version,
+      (await db.select().from(siteContent).where(eq(siteContent.id, 1)))[0]
+        .version,
     ).toBe(9);
-    expect(await db.getRepository(Project).count()).toBe(6);
+    expect((await db.select({ count: count() }).from(projects))[0].count).toBe(
+      6,
+    );
   });
 
   it('Bearer JWT 인증과 Origin 없는 요청·로그인 실패 응답을 검증한다', async () => {
@@ -203,7 +220,7 @@ describe('실제 PostgreSQL API 계약', () => {
     expect((await request('/api/v1/admin/auth/me')).body.data.email).toBe(
       'admin@example.com',
     );
-    const stored = await db.getRepository(AdminSession).find();
+    const stored = await db.select().from(adminSessions);
     expect(stored[0].tokenHash).toBe(
       createHash('sha256').update(token).digest('hex'),
     );
@@ -241,9 +258,10 @@ describe('실제 PostgreSQL API 계약', () => {
 
   it('DB에 등록돼도 서명·만료·발급자·대상·claims가 잘못된 JWT를 거절한다', async () => {
     const jwt = app.get(JwtService);
-    const account = await db
-      .getRepository(AdminAccount)
-      .findOneByOrFail({ email: 'admin@example.com' });
+    const [account] = await db
+      .select()
+      .from(adminAccounts)
+      .where(eq(adminAccounts.email, 'admin@example.com'));
     const payload = {
       sub: account.id,
       jti: randomBytes(32).toString('base64url'),
@@ -265,7 +283,7 @@ describe('실제 PostgreSQL API 계약', () => {
     ];
     for (const invalid of invalidTokens) {
       const hash = createHash('sha256').update(invalid).digest('hex');
-      await db.getRepository(AdminSession).insert({
+      await db.insert(adminSessions).values({
         tokenHash: hash,
         adminId: account.id,
         expiresAt: new Date(Date.now() + 3600000),
@@ -279,28 +297,37 @@ describe('실제 PostgreSQL API 계약', () => {
           ).status,
         ).toBe(401);
       } finally {
-        await db.getRepository(AdminSession).delete({ tokenHash: hash });
+        await db.delete(adminSessions).where(eq(adminSessions.tokenHash, hash));
       }
     }
-    const foreign = await db.getRepository(AdminAccount).save({
-      email: 'foreign@example.com',
-      passwordHash: account.passwordHash,
-      isActive: true,
-    });
+    const [foreign] = await db
+      .insert(adminAccounts)
+      .values({
+        email: 'foreign@example.com',
+        passwordHash: account.passwordHash,
+        isActive: true,
+      })
+      .returning();
     const validHash = createHash('sha256').update(token).digest('hex');
     await db
-      .getRepository(AdminSession)
-      .update(validHash, { adminId: foreign.id });
+      .update(adminSessions)
+      .set({ adminId: foreign.id })
+      .where(eq(adminSessions.tokenHash, validHash));
     expect((await request('/api/v1/admin/auth/me')).status).toBe(401);
     await db
-      .getRepository(AdminSession)
-      .update(validHash, { adminId: account.id });
-    await db.getRepository(AdminAccount).delete(foreign.id);
+      .update(adminSessions)
+      .set({ adminId: account.id })
+      .where(eq(adminSessions.tokenHash, validHash));
+    await db.delete(adminAccounts).where(eq(adminAccounts.id, foreign.id));
     await db
-      .getRepository(AdminAccount)
-      .update(account.id, { isActive: false });
+      .update(adminAccounts)
+      .set({ isActive: false })
+      .where(eq(adminAccounts.id, account.id));
     expect((await request('/api/v1/admin/auth/me')).status).toBe(401);
-    await db.getRepository(AdminAccount).update(account.id, { isActive: true });
+    await db
+      .update(adminAccounts)
+      .set({ isActive: true })
+      .where(eq(adminAccounts.id, account.id));
   });
 
   it('프로젝트 공개·버전 충돌·입력 거절·삭제 동작을 검증한다', async () => {
@@ -318,6 +345,21 @@ describe('실제 PostgreSQL API 계약', () => {
     expect(created.status).toBe(201);
     const project = created.body.data;
     expect(ProjectSchema.safeParse(project).success).toBe(true);
+    const duplicate = await request('/api/v1/admin/projects', 'POST', {
+      slug: 'integration-project',
+      title: '중복 프로젝트',
+      category: 'side',
+      template: 'none',
+      content: {},
+    });
+    expect(duplicate.status).toBe(409);
+    expect(duplicate.body).toEqual({
+      success: false,
+      error: {
+        code: 'CONFLICT',
+        message: '이미 사용 중인 프로젝트 슬러그입니다.',
+      },
+    });
     expect((await request('/api/v1/projects/integration-project')).status).toBe(
       404,
     );
@@ -572,16 +614,18 @@ describe('실제 PostgreSQL API 계약', () => {
         })
       ).status,
     ).toBe(413);
-    const expires = await db.getRepository(AdminSession).findOneByOrFail({
-      adminId: (
-        await db
-          .getRepository(AdminAccount)
-          .findOneByOrFail({ email: 'admin@example.com' })
-      ).id,
-    });
+    const [account] = await db
+      .select()
+      .from(adminAccounts)
+      .where(eq(adminAccounts.email, 'admin@example.com'));
+    const [expires] = await db
+      .select()
+      .from(adminSessions)
+      .where(eq(adminSessions.adminId, account.id));
     await db
-      .getRepository(AdminSession)
-      .update(expires.tokenHash, { expiresAt: new Date(0) });
+      .update(adminSessions)
+      .set({ expiresAt: new Date(0) })
+      .where(eq(adminSessions.tokenHash, expires.tokenHash));
     expect((await request('/api/v1/admin/auth/me')).status).toBe(401);
     const login = await request<LoginResponse>(
       '/api/v1/admin/auth/login',
@@ -598,7 +642,9 @@ describe('실제 PostgreSQL API 계약', () => {
     });
     expect(changed.status).toBe(200);
     expect((await request('/api/v1/admin/auth/me')).status).toBe(401);
-    expect(await db.getRepository(AdminSession).count()).toBe(0);
+    expect(
+      (await db.select({ count: count() }).from(adminSessions))[0].count,
+    ).toBe(0);
     const relogin = await request<LoginResponse>(
       '/api/v1/admin/auth/login',
       'POST',
@@ -623,29 +669,34 @@ describe('실제 PostgreSQL API 계약', () => {
   });
 
   it('비밀번호가 검증 도중 변경되면 구 비밀번호 로그인은 세션을 만들지 않는다', async () => {
-    const account = await db
-      .getRepository(AdminAccount)
-      .findOneByOrFail({ email: 'admin@example.com' });
+    const [account] = await db
+      .select()
+      .from(adminAccounts)
+      .where(eq(adminAccounts.email, 'admin@example.com'));
     const replacement = await hashPassword('concurrent-reset-password');
     const verify = passwords.verifyPassword;
     const spy = jest
       .spyOn(passwords, 'verifyPassword')
       .mockImplementation(async (value, hash) => {
         await db
-          .getRepository(AdminAccount)
-          .update(account.id, { passwordHash: replacement });
+          .update(adminAccounts)
+          .set({ passwordHash: replacement })
+          .where(eq(adminAccounts.id, account.id));
         return verify(value, hash);
       });
     try {
       await expect(
         app.get(AuthService).login(account.email, 'replacement-test-password'),
       ).rejects.toThrow('로그인 정보가 변경');
-      expect(await db.getRepository(AdminSession).count()).toBe(0);
+      expect(
+        (await db.select({ count: count() }).from(adminSessions))[0].count,
+      ).toBe(0);
     } finally {
       spy.mockRestore();
       await db
-        .getRepository(AdminAccount)
-        .update(account.id, { passwordHash: account.passwordHash });
+        .update(adminAccounts)
+        .set({ passwordHash: account.passwordHash })
+        .where(eq(adminAccounts.id, account.id));
     }
   });
 });

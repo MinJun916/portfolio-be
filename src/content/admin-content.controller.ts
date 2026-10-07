@@ -19,7 +19,7 @@ import {
 } from '@nestjs/swagger';
 import { AdminGuard } from '../auth/admin.guard';
 import { ApiErrors, ApiResult } from '../common/api';
-import { Experience, Project, TechGroup } from '../database/entities';
+import { experiences, projects, techGroups } from '../database/schema';
 import {
   CreateExperienceDto,
   CreateProjectDto,
@@ -76,7 +76,7 @@ export class AdminContentController {
   @ApiResult(ExperienceDto, { array: true })
   @ApiErrors(401, 500)
   listExperiences() {
-    return this.content.list(Experience);
+    return this.content.list(experiences);
   }
 
   @Post('experiences')
@@ -88,7 +88,7 @@ export class AdminContentController {
   @ApiResult(ExperienceDto, { status: 201 })
   @ApiErrors(400, 401, 409, 500)
   createExperience(@Body() body: CreateExperienceDto) {
-    return this.content.create(Experience, body);
+    return this.content.create(experiences, body);
   }
 
   @Patch('experiences/order')
@@ -100,7 +100,7 @@ export class AdminContentController {
   @ApiResult(ExperienceDto, { array: true })
   @ApiErrors(400, 401, 409, 500)
   reorderExperiences(@Body() body: ReorderDto) {
-    return this.content.reorder(Experience, body);
+    return this.content.reorder(experiences, body);
   }
 
   @Get('experiences/:id')
@@ -112,7 +112,7 @@ export class AdminContentController {
   @ApiResult(ExperienceDto)
   @ApiErrors(400, 401, 404, 500)
   getExperience(@Param('id', ParseUUIDPipe) id: string) {
-    return this.content.detail(Experience, id);
+    return this.content.detail(experiences, id);
   }
 
   @Patch('experiences/:id')
@@ -128,7 +128,7 @@ export class AdminContentController {
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: PatchExperienceDto,
   ) {
-    return this.content.patch(Experience, id, body);
+    return this.content.patch(experiences, id, body);
   }
 
   @Delete('experiences/:id')
@@ -151,7 +151,7 @@ export class AdminContentController {
     @Param('id', ParseUUIDPipe) id: string,
     @Query() query: DeleteQueryDto,
   ) {
-    return this.content.remove(Experience, id, query.version);
+    return this.content.remove(experiences, id, query.version);
   }
 
   @Get('tech-groups')
@@ -162,7 +162,7 @@ export class AdminContentController {
   @ApiResult(TechGroupDto, { array: true })
   @ApiErrors(401, 500)
   listTechGroups() {
-    return this.content.list(TechGroup);
+    return this.content.list(techGroups);
   }
 
   @Post('tech-groups')
@@ -174,7 +174,7 @@ export class AdminContentController {
   @ApiResult(TechGroupDto, { status: 201 })
   @ApiErrors(400, 401, 409, 500)
   createTechGroup(@Body() body: CreateTechGroupDto) {
-    return this.content.create(TechGroup, body);
+    return this.content.create(techGroups, body);
   }
 
   @Patch('tech-groups/order')
@@ -186,7 +186,7 @@ export class AdminContentController {
   @ApiResult(TechGroupDto, { array: true })
   @ApiErrors(400, 401, 409, 500)
   reorderTechGroups(@Body() body: ReorderDto) {
-    return this.content.reorder(TechGroup, body);
+    return this.content.reorder(techGroups, body);
   }
 
   @Get('tech-groups/:id')
@@ -198,7 +198,7 @@ export class AdminContentController {
   @ApiResult(TechGroupDto)
   @ApiErrors(400, 401, 404, 500)
   getTechGroup(@Param('id', ParseUUIDPipe) id: string) {
-    return this.content.detail(TechGroup, id);
+    return this.content.detail(techGroups, id);
   }
 
   @Patch('tech-groups/:id')
@@ -214,7 +214,7 @@ export class AdminContentController {
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: PatchTechGroupDto,
   ) {
-    return this.content.patch(TechGroup, id, body);
+    return this.content.patch(techGroups, id, body);
   }
 
   @Delete('tech-groups/:id')
@@ -237,7 +237,7 @@ export class AdminContentController {
     @Param('id', ParseUUIDPipe) id: string,
     @Query() query: DeleteQueryDto,
   ) {
-    return this.content.remove(TechGroup, id, query.version);
+    return this.content.remove(techGroups, id, query.version);
   }
 
   @Get('projects')
@@ -248,7 +248,7 @@ export class AdminContentController {
   @ApiResult(ProjectDto, { array: true })
   @ApiErrors(401, 500)
   listProjects() {
-    return this.content.list(Project);
+    return this.content.list(projects);
   }
 
   @Post('projects')
@@ -260,7 +260,7 @@ export class AdminContentController {
   @ApiResult(ProjectDto, { status: 201 })
   @ApiErrors(400, 401, 409, 500)
   createProject(@Body() body: CreateProjectDto) {
-    return this.content.create(Project, body);
+    return this.content.create(projects, body);
   }
 
   @Patch('projects/order')
@@ -272,7 +272,7 @@ export class AdminContentController {
   @ApiResult(ProjectDto, { array: true })
   @ApiErrors(400, 401, 409, 500)
   reorderProjects(@Body() body: ReorderDto) {
-    return this.content.reorder(Project, body);
+    return this.content.reorder(projects, body);
   }
 
   @Get('projects/:id')
@@ -284,7 +284,7 @@ export class AdminContentController {
   @ApiResult(ProjectDto)
   @ApiErrors(400, 401, 404, 500)
   getProject(@Param('id', ParseUUIDPipe) id: string) {
-    return this.content.detail(Project, id);
+    return this.content.detail(projects, id);
   }
 
   @Patch('projects/:id')
@@ -300,7 +300,7 @@ export class AdminContentController {
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: PatchProjectDto,
   ) {
-    return this.content.patch(Project, id, body);
+    return this.content.patch(projects, id, body);
   }
 
   @Delete('projects/:id')
@@ -323,6 +323,6 @@ export class AdminContentController {
     @Param('id', ParseUUIDPipe) id: string,
     @Query() query: DeleteQueryDto,
   ) {
-    return this.content.remove(Project, id, query.version);
+    return this.content.remove(projects, id, query.version);
   }
 }

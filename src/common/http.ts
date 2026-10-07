@@ -12,7 +12,7 @@ import {
 import { Response } from 'express';
 import { ZodValidationException } from 'nestjs-zod';
 import { map } from 'rxjs';
-import { QueryFailedError } from 'typeorm';
+import { DrizzleQueryError } from 'drizzle-orm';
 import { ZodError } from 'zod';
 
 @Injectable()
@@ -74,28 +74,28 @@ export class ApiExceptionFilter implements ExceptionFilter {
         status === 413
           ? '요청 본문은 1MB 이하여야 합니다.'
           : '올바른 JSON 본문이 필요합니다.';
-    } else if (exception instanceof QueryFailedError) {
-      const code = (exception.driverError as { code?: string }).code;
+    } else if (exception instanceof Error) {
+      const code =
+        exception instanceof DrizzleQueryError
+          ? (exception.cause as { code?: string } | undefined)?.code
+          : (exception as NodeJS.ErrnoException).code;
       if (code === '23505') {
         status = 409;
         message = '이미 사용 중인 값입니다.';
       } else if (
         code?.startsWith('08') ||
-        ['ECONNREFUSED', 'ECONNRESET', '57P01', '57P03', '53300'].includes(
-          code ?? '',
-        )
+        [
+          'ECONNREFUSED',
+          'ECONNRESET',
+          'ENOTFOUND',
+          '57P01',
+          '57P03',
+          '53300',
+        ].includes(code ?? '')
       ) {
         status = 503;
         message = '데이터베이스 연결을 사용할 수 없습니다.';
       }
-    } else if (
-      exception instanceof Error &&
-      ['ECONNREFUSED', 'ECONNRESET'].includes(
-        (exception as NodeJS.ErrnoException).code ?? '',
-      )
-    ) {
-      status = 503;
-      message = '데이터베이스 연결을 사용할 수 없습니다.';
     }
     // SQL, 요청 본문, 쿠키/비밀번호를 로그나 응답에 노출하지 않습니다.
     if (status >= 500)

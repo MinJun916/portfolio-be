@@ -1,9 +1,10 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { createHash, randomBytes } from 'node:crypto';
-import { DataSource, LessThanOrEqual, MoreThan } from 'typeorm';
+import { and, eq, gt, lte } from 'drizzle-orm';
 import { z } from 'zod';
-import { AdminAccount, AdminSession } from '../database/entities';
+import { DatabaseService } from '../database/database.module';
+import { adminAccounts, adminSessions } from '../database/schema';
 import { hashPassword, verifyPassword } from './password';
 
 export const SESSION_SECONDS = 8 * 60 * 60;
@@ -24,14 +25,25 @@ const tokenHash = (token: string) =>
 export class AuthService {
   private readonly dummyHash = hashPassword(randomBytes(32).toString('hex'));
   constructor(
-    private readonly db: DataSource,
+    private readonly database: DatabaseService,
     private readonly jwt: JwtService,
   ) {}
 
+  private get db() {
+    return this.database.db;
+  }
+
   async login(email: string, password: string) {
-    const account = await this.db
-      .getRepository(AdminAccount)
-      .findOneBy({ email: email.toLowerCase(), isActive: true });
+    const [account] = await this.db
+      .select()
+      .from(adminAccounts)
+      .where(
+        and(
+          eq(adminAccounts.email, email.toLowerCase()),
+          eq(adminAccounts.isActive, true),
+        ),
+      )
+      .limit(1);
     if (
       !(await verifyPassword(
         password,
@@ -47,19 +59,26 @@ export class AuthService {
       jti: randomBytes(32).toString('base64url'),
       iat: issuedAt,
     });
-    await this.db.transaction(async (manager) => {
-      const current = await manager.findOne(AdminAccount, {
-        where: { id: account.id, isActive: true },
-        lock: { mode: 'pessimistic_write' },
-      });
+    await this.db.transaction(async (tx) => {
+      const [current] = await tx
+        .select()
+        .from(adminAccounts)
+        .where(
+          and(
+            eq(adminAccounts.id, account.id),
+            eq(adminAccounts.isActive, true),
+          ),
+        )
+        .limit(1)
+        .for('update');
       if (!current || current.passwordHash !== account.passwordHash)
         throw new UnauthorizedException(
           '로그인 정보가 변경되었습니다. 다시 로그인해주세요.',
         );
-      await manager.delete(AdminSession, {
-        expiresAt: LessThanOrEqual(new Date()),
-      });
-      await manager.insert(AdminSession, {
+      await tx
+        .delete(adminSessions)
+        .where(lte(adminSessions.expiresAt, new Date()));
+      await tx.insert(adminSessions).values({
         tokenHash: tokenHash(token),
         adminId: account.id,
         expiresAt: new Date(issuedAt * 1000 + SESSION_MS),
@@ -86,24 +105,37 @@ export class AuthService {
     } catch {
       throw new UnauthorizedException('로그인이 만료되었습니다.');
     }
-    const session = await this.db.getRepository(AdminSession).findOneBy({
-      tokenHash: tokenHash(token),
-      adminId: claims.sub,
-      expiresAt: MoreThan(new Date()),
-    });
-    const account = session
+    const [session] = await this.db
+      .select()
+      .from(adminSessions)
+      .where(
+        and(
+          eq(adminSessions.tokenHash, tokenHash(token)),
+          eq(adminSessions.adminId, claims.sub),
+          gt(adminSessions.expiresAt, new Date()),
+        ),
+      )
+      .limit(1);
+    const [account] = session
       ? await this.db
-          .getRepository(AdminAccount)
-          .findOneBy({ id: session.adminId, isActive: true })
-      : null;
+          .select()
+          .from(adminAccounts)
+          .where(
+            and(
+              eq(adminAccounts.id, session.adminId),
+              eq(adminAccounts.isActive, true),
+            ),
+          )
+          .limit(1)
+      : [];
     if (!account) throw new UnauthorizedException('로그인이 만료되었습니다.');
     return { id: account.id, email: account.email };
   }
 
   async logout(token: string) {
     await this.db
-      .getRepository(AdminSession)
-      .delete({ tokenHash: tokenHash(token) });
+      .delete(adminSessions)
+      .where(eq(adminSessions.tokenHash, tokenHash(token)));
   }
 
   async changePassword(
@@ -111,23 +143,31 @@ export class AuthService {
     currentPassword: string,
     newPassword: string,
   ) {
-    const account = await this.db
-      .getRepository(AdminAccount)
-      .findOneByOrFail({ id });
+    const [account] = await this.db
+      .select()
+      .from(adminAccounts)
+      .where(eq(adminAccounts.id, id))
+      .limit(1);
+    if (!account) throw new Error('Admin account not found');
     if (!(await verifyPassword(currentPassword, account.passwordHash)))
       throw new UnauthorizedException('현재 비밀번호를 확인해주세요.');
     const passwordHash = await hashPassword(newPassword);
-    await this.db.transaction(async (manager) => {
-      const changed = await manager.update(
-        AdminAccount,
-        { id, passwordHash: account.passwordHash },
-        { passwordHash },
-      );
-      if (!changed.affected)
+    await this.db.transaction(async (tx) => {
+      const changed = await tx
+        .update(adminAccounts)
+        .set({ passwordHash })
+        .where(
+          and(
+            eq(adminAccounts.id, id),
+            eq(adminAccounts.passwordHash, account.passwordHash),
+          ),
+        )
+        .returning({ id: adminAccounts.id });
+      if (!changed.length)
         throw new UnauthorizedException(
           '비밀번호가 이미 변경되었습니다. 다시 로그인해주세요.',
         );
-      await manager.delete(AdminSession, { adminId: id });
+      await tx.delete(adminSessions).where(eq(adminSessions.adminId, id));
     });
   }
 }

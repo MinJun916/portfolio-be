@@ -64,18 +64,24 @@ Swagger에서는 로그인 API를 실행한 뒤 응답의 `accessToken`을 **Aut
 
 ## DB 마이그레이션
 
-TypeORM migration으로 스키마 변경을 관리합니다. `migrations` 테이블에 적용된 migration 이름·버전(timestamp)을 기록하고 미적용 파일만 순서대로 실행합니다.
-현재 초기 migration은 `src/database/1780857600000-InitialSchema.ts`입니다. `synchronize: false`이므로 API 실행만으로 테이블을 임의 변경하지 않습니다.
+Drizzle ORM과 Drizzle Kit의 버전별 SQL migration으로 스키마 변경을 관리합니다.
+스키마는 `src/database/schema.ts`, SQL·snapshot·journal은 `src/database/migrations/`에 있습니다.
+`drizzle.__drizzle_migrations`에 적용된 SQL hash와 생성 timestamp를 기록하고 미적용 migration만 실행합니다. API 시작 시 자동으로 스키마를 변경하지 않습니다.
 
 ```bash
+# 스키마 수정 후 개발 환경에서 SQL 생성·검토·커밋
+npm run db:generate -- --name=변경명
+# 배포 이미지에는 Drizzle Kit 없이 런타임 migrator와 SQL만 사용
 npm run build
 npm run db:migrate
 ```
 
-같은 명령을 다시 실행해도 적용된 migration은 반복하지 않습니다. 기본 트랜잭션에서 실패한 migration의 DDL과 이력 기록을 롤백합니다.
+같은 명령을 다시 실행해도 적용된 migration은 반복하지 않습니다. 실패한 migration의 DDL과 이력 기록은 트랜잭션으로 롤백합니다.
 배포 워크플로우도 DB 준비 → 새 이미지로 migration → API 교체 순서이며 migration이 실패하면 API 교체를 중단합니다.
-스키마 변경 시 기존 migration은 수정하지 않고 새 `MigrationInterface` 파일을 추가한 뒤 `src/database/options.ts`의 `migrations` 목록에 등록합니다. TypeORM은 Flyway의 checksum 검증 기능까지 제공하지 않으므로 실행된 파일은 유지합니다.
-JWT 전환은 기존 `admin_sessions` 구조를 그대로 사용해 추가 스키마 변경이 없습니다. 초기 데이터와 관리자 생성은 별도 명령으로 실행합니다.
+이미 실행한 SQL·snapshot·journal은 수정하지 않고 새 migration을 추가합니다. 기본 migrator는 기록된 hash의 변경을 Flyway처럼 자동 검증하지 않으므로 적용 파일을 불변으로 유지해야 합니다. 운영에서는 `drizzle-kit push`를 사용하지 않습니다.
+
+기존 `InitialSchema1780857600000` migration이 적용된 DB는 초기 Drizzle SQL이 기존 6개 테이블을 확인한 뒤 데이터·기존 migration 이력을 보존하고 Drizzle 이력을 기록합니다. 부분 적용 또는 알려지지 않은 기존 스키마는 실패하므로 백업 후 상태를 확인해야 합니다. 신규 DB는 같은 SQL로 전체 스키마를 생성합니다.
+초기 데이터와 관리자 생성은 별도 명령이며 `DATABASE_URL`, `JWT_SECRET` 등 배포 env는 동일합니다.
 
 ## API 계약
 
@@ -109,11 +115,11 @@ JWT 전환은 기존 `admin_sessions` 구조를 그대로 사용해 추가 스�
 npm test -- --runInBand
 npm run build
 npx eslint src --no-fix
-# 통합 테스트는 전용 DB 테이블을 비웁니다. DB 이름이 _test로 끝나야 합니다.
+# 통합 테스트는 전용 DB의 애플리케이션 테이블과 migration 이력을 생성·삭제합니다. DB 이름이 _test로 끝나야 합니다.
 TEST_DATABASE_URL=postgresql://USER:PASSWORD@127.0.0.1:5432/portfolio_test npm run test:integration
 ```
 
-테스트는 실제 PostgreSQL에서 JWT 서명/만료/claims, 토큰 폐기, CRUD, 공개 필터, 버전 충돌, 순서 변경의 롤백, 재시드 보존, migration 중복 실행 방지, 동시 비밀번호 변경, Swagger 참조와 응답 계약을 확인합니다.
+테스트는 실제 PostgreSQL에서 JWT 서명/만료/claims, 토큰 폐기, CRUD, 공개 필터, 버전 충돌, 순서 변경의 롤백, 재시드 보존, migration 중복 실행 방지·기존 DB 채택·부분 스키마 거절과 DDL 롤백, 동시 비밀번호 변경, Swagger 참조와 응답 계약을 확인합니다.
 운영 의존성은 NestJS 11을 유지하며 Swagger의 js-yaml을 5.4.3으로 고정해 알려진 YAML 처리 취약점을 해결합니다.
 
 ## 자동 배포

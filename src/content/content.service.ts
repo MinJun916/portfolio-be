@@ -4,20 +4,25 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import {
+  and,
+  asc,
+  DrizzleQueryError,
+  eq,
+  getTableColumns,
+  sql,
+} from 'drizzle-orm';
+import type { InferInsertModel } from 'drizzle-orm';
 import { ZodValidationException } from 'nestjs-zod';
+import { DatabaseService } from '../database/database.module';
+import type { Transaction } from '../database/database';
 import {
-  DataSource,
-  DeepPartial,
-  EntityManager,
-  EntityTarget,
-  ObjectLiteral,
-} from 'typeorm';
-import {
-  Experience,
-  Project,
-  SiteContent,
-  TechGroup,
-} from '../database/entities';
+  experiences,
+  projects,
+  siteContent,
+  techGroups,
+} from '../database/schema';
+import type { Project } from '../database/schema';
 import {
   CaseStudySchema,
   ChangelogSchema,
@@ -26,157 +31,163 @@ import {
   ReorderDto,
 } from './content.dto';
 
-type ContentEntity = Experience | TechGroup | Project;
-type Patch = { version: number };
+type ContentTable = typeof experiences | typeof techGroups | typeof projects;
 
 @Injectable()
 export class ContentService {
-  constructor(private readonly db: DataSource) {}
+  constructor(private readonly database: DatabaseService) {}
 
   async site() {
-    const site = await this.db.getRepository(SiteContent).findOneBy({ id: 1 });
+    const [site] = await this.database.db
+      .select()
+      .from(siteContent)
+      .where(eq(siteContent.id, 1));
     if (!site) throw new NotFoundException('사이트 콘텐츠가 없습니다.');
     return site;
   }
 
   async patchSite(body: PatchSiteDto) {
-    return this.db.transaction(async (manager) => {
-      const result = await manager
-        .getRepository(SiteContent)
-        .createQueryBuilder()
-        .update()
-        .set({ data: body.data, version: () => '"version" + 1' })
-        .where('id = :id AND version = :version', {
-          id: 1,
-          version: body.version,
+    return this.database.db.transaction(async (tx) => {
+      const [site] = await tx
+        .update(siteContent)
+        .set({
+          data: body.data,
+          version: sql`${siteContent.version} + 1`,
+          updatedAt: sql`now()`,
         })
-        .returning('*')
-        .execute();
-      if (!result.affected)
-        await this.missingOrConflict(manager, SiteContent, 1);
-      return manager.getRepository(SiteContent).findOneByOrFail({ id: 1 });
+        .where(
+          and(eq(siteContent.id, 1), eq(siteContent.version, body.version)),
+        )
+        .returning();
+      if (!site) await this.missingOrConflict(tx, siteContent, 1);
+      return site;
     });
   }
 
-  list<T extends ContentEntity>(entity: EntityTarget<T>, published = false) {
-    const query = this.db
-      .getRepository(entity)
-      .createQueryBuilder('item')
-      .orderBy('item.sortOrder', 'ASC')
-      .addOrderBy('item.id', 'ASC');
-    if (published) query.where('item.isPublished = true');
-    return query.getMany();
+  list(table: ContentTable, published = false) {
+    return this.database.db
+      .select()
+      .from(table)
+      .where(published ? eq(table.isPublished, true) : undefined)
+      .orderBy(asc(table.sortOrder), asc(table.id));
   }
 
-  async projects(category?: string, home = false) {
-    const query = this.db
-      .getRepository(Project)
-      .createQueryBuilder('project')
-      .where('project.isPublished = true')
-      .orderBy('project.sortOrder', 'ASC')
-      .addOrderBy('project.id', 'ASC');
-    query.select(
-      this.db
-        .getMetadata(Project)
-        .columns.filter((column) => column.propertyName !== 'content')
-        .map((column) => `project.${column.propertyPath}`),
-    );
-    if (category) query.andWhere('project.category = :category', { category });
-    if (home) query.andWhere('project.showOnHome = true');
-    return query.getMany();
+  projects(category?: Project['category'], home = false) {
+    const { content: _content, ...columns } = getTableColumns(projects);
+    void _content;
+    return this.database.db
+      .select(columns)
+      .from(projects)
+      .where(
+        and(
+          eq(projects.isPublished, true),
+          category ? eq(projects.category, category) : undefined,
+          home ? eq(projects.showOnHome, true) : undefined,
+        ),
+      )
+      .orderBy(asc(projects.sortOrder), asc(projects.id));
   }
 
   async publicProject(slug: string) {
-    const project = await this.db
-      .getRepository(Project)
-      .findOneBy({ slug, isPublished: true });
+    const [project] = await this.database.db
+      .select()
+      .from(projects)
+      .where(and(eq(projects.slug, slug), eq(projects.isPublished, true)));
     if (!project) throw new NotFoundException('공개된 프로젝트가 없습니다.');
     return project;
   }
 
   async home() {
-    const [site, experiences, techGroups, projects] = await Promise.all([
-      this.site(),
-      this.list(Experience, true),
-      this.list(TechGroup, true),
-      this.projects(undefined, true),
-    ]);
-    return { site, experiences, techGroups, projects };
+    const [site, experienceList, techGroupList, projectList] =
+      await Promise.all([
+        this.site(),
+        this.list(experiences, true),
+        this.list(techGroups, true),
+        this.projects(undefined, true),
+      ]);
+    return {
+      site,
+      experiences: experienceList,
+      techGroups: techGroupList,
+      projects: projectList,
+    };
   }
 
-  async detail<T extends ContentEntity>(entity: EntityTarget<T>, id: string) {
-    const item = await this.db.getRepository(entity).findOneBy({ id } as never);
+  async detail(table: ContentTable, id: string) {
+    const [item] = await this.database.db
+      .select()
+      .from(table)
+      .where(eq(table.id, id));
     if (!item) throw new NotFoundException('콘텐츠가 없습니다.');
     return item;
   }
 
-  async create<T extends ContentEntity>(entity: EntityTarget<T>, body: object) {
-    if (entity === Project) this.validateProject(body as Project);
+  async create<T extends ContentTable>(table: T, body: InferInsertModel<T>) {
+    if (table === projects) this.validateProject(body);
     try {
-      return await this.db
-        .getRepository(entity)
-        .save(this.db.getRepository(entity).create(body as DeepPartial<T>));
+      const [item] = await this.database.db
+        .insert(table)
+        .values(body)
+        .returning();
+      return item;
     } catch (error) {
       this.rethrowConstraint(error);
     }
   }
 
-  async patch<T extends ContentEntity>(
-    entity: EntityTarget<T>,
+  async patch<T extends ContentTable>(
+    table: T,
     id: string,
-    body: Patch,
+    body: Partial<InferInsertModel<T>> & { version: number },
   ) {
     try {
-      return await this.db.transaction(async (manager) => {
-        const repo = manager.getRepository(entity);
-        const current = await repo.findOneBy({ id } as never);
+      const contentTable: ContentTable = table;
+      return await this.database.db.transaction(async (tx) => {
+        const [current] = await tx
+          .select()
+          .from(contentTable)
+          .where(eq(contentTable.id, id));
         if (!current) throw new NotFoundException('콘텐츠가 없습니다.');
         if (current.version !== body.version)
           throw new ConflictException(
             '콘텐츠가 변경되었습니다. 다시 조회해 주세요.',
           );
         const { version, ...changes } = body;
-        if (entity === Project)
-          this.validateProject({ ...current, ...changes } as Project);
-        const result = await repo
-          .createQueryBuilder()
-          .update()
-          .set({ ...changes, version: () => '"version" + 1' } as never)
-          .where('id = :id AND version = :version', { id, version })
-          .execute();
-        if (!result.affected) await this.missingOrConflict(manager, entity, id);
-        return repo.findOneByOrFail({ id } as never);
+        if (table === projects)
+          this.validateProject({ ...current, ...changes });
+        const [item] = await tx
+          .update(contentTable)
+          .set({
+            ...changes,
+            version: sql`${table.version} + 1`,
+            updatedAt: sql`now()`,
+          })
+          .where(and(eq(table.id, id), eq(table.version, version)))
+          .returning();
+        if (!item) await this.missingOrConflict(tx, table, id);
+        return item;
       });
     } catch (error) {
       this.rethrowConstraint(error);
     }
   }
 
-  async remove<T extends ContentEntity>(
-    entity: EntityTarget<T>,
-    id: string,
-    version: number,
-  ) {
-    return this.db.transaction(async (manager) => {
-      const result = await manager
-        .getRepository(entity)
-        .delete({ id, version } as never);
-      if (!result.affected) await this.missingOrConflict(manager, entity, id);
+  async remove(table: ContentTable, id: string, version: number) {
+    return this.database.db.transaction(async (tx) => {
+      const [item] = await tx
+        .delete(table)
+        .where(and(eq(table.id, id), eq(table.version, version)))
+        .returning({ id: table.id });
+      if (!item) await this.missingOrConflict(tx, table, id);
       return { id };
     });
   }
 
-  async reorder<T extends ContentEntity>(
-    entity: EntityTarget<T>,
-    body: ReorderDto,
-  ) {
-    return this.db.transaction(async (manager) => {
-      const repo = manager.getRepository(entity);
+  async reorder(table: ContentTable, body: ReorderDto) {
+    return this.database.db.transaction(async (tx) => {
       // ponytail: whole-table reorder lock; use list-scoped locking if concurrent editing throughput requires it.
-      await manager.query(
-        `LOCK TABLE ${repo.metadata.tablePath} IN SHARE ROW EXCLUSIVE MODE`,
-      );
-      const existing = await repo.find({ order: { id: 'ASC' } as never });
+      await tx.execute(sql`LOCK TABLE ${table} IN SHARE ROW EXCLUSIVE MODE`);
+      const existing = await tx.select({ id: table.id }).from(table);
       const ids = new Set(body.items.map((item) => item.id));
       if (
         ids.size !== body.items.length ||
@@ -188,45 +199,59 @@ export class ContentService {
         );
       }
       for (const [sortOrder, item] of body.items.entries()) {
-        const result = await repo
-          .createQueryBuilder()
-          .update()
-          .set({ sortOrder, version: () => '"version" + 1' } as never)
-          .where('id = :id AND version = :version', item)
-          .execute();
-        if (!result.affected)
+        const [updated] = await tx
+          .update(table)
+          .set({
+            sortOrder,
+            version: sql`${table.version} + 1`,
+            updatedAt: sql`now()`,
+          })
+          .where(and(eq(table.id, item.id), eq(table.version, item.version)))
+          .returning({ id: table.id });
+        if (!updated)
           throw new ConflictException(
             '목록이 변경되었습니다. 다시 조회해 주세요.',
           );
       }
-      return repo.find({ order: { sortOrder: 'ASC', id: 'ASC' } as never });
+      return tx
+        .select()
+        .from(table)
+        .orderBy(asc(table.sortOrder), asc(table.id));
     });
   }
 
-  private validateProject(project: Project) {
-    const schema = {
-      'case-study': CaseStudySchema,
-      changelog: ChangelogSchema,
-      none: EmptyContentSchema,
-    }[project.template];
+  private validateProject(project: object) {
+    if (!('template' in project) || !('content' in project))
+      throw new BadRequestException('프로젝트 템플릿과 콘텐츠가 필요합니다.');
+    const schema =
+      project.template === 'case-study'
+        ? CaseStudySchema
+        : project.template === 'changelog'
+          ? ChangelogSchema
+          : EmptyContentSchema;
     const result = schema.safeParse(project.content);
     if (!result.success) throw new ZodValidationException(result.error);
   }
 
-  private async missingOrConflict<T extends ObjectLiteral>(
-    manager: EntityManager,
-    entity: EntityTarget<T>,
+  private async missingOrConflict(
+    tx: Transaction,
+    table: ContentTable | typeof siteContent,
     id: string | number,
   ): Promise<never> {
-    if (!(await manager.getRepository(entity).existsBy({ id } as never)))
-      throw new NotFoundException('콘텐츠가 없습니다.');
+    const [item] = await tx
+      .select({ id: table.id })
+      .from(table)
+      .where(eq(table.id, id));
+    if (!item) throw new NotFoundException('콘텐츠가 없습니다.');
     throw new ConflictException('콘텐츠가 변경되었습니다. 다시 조회해 주세요.');
   }
 
   private rethrowConstraint(error: unknown): never {
     if (
-      (error as { driverError?: { code?: string } })?.driverError?.code ===
-      '23505'
+      error instanceof DrizzleQueryError &&
+      error.cause &&
+      'code' in error.cause &&
+      error.cause.code === '23505'
     )
       throw new ConflictException('이미 사용 중인 프로젝트 슬러그입니다.');
     throw error;

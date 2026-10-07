@@ -8,6 +8,9 @@
       {
         "include": "database/seed-data.json",
         "watchAssets": true
+      },
+      {
+        "include": "database/migrations/**/*"
       }
     ]
   }

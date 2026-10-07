@@ -1,9 +1,15 @@
-import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
-import { getDataSourceOptions } from './options';
+import { Global, Injectable, Module, OnModuleDestroy } from '@nestjs/common';
+import { createDatabase } from './database';
 
-@Module({
-  imports: [TypeOrmModule.forRootAsync({ useFactory: getDataSourceOptions })],
-  exports: [TypeOrmModule],
-})
+@Injectable()
+export class DatabaseService implements OnModuleDestroy {
+  readonly db = createDatabase();
+
+  async onModuleDestroy() {
+    await this.db.$client.end();
+  }
+}
+
+@Global()
+@Module({ providers: [DatabaseService], exports: [DatabaseService] })
 export class DatabaseModule {}

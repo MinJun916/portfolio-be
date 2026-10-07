@@ -1,68 +1,45 @@
-import 'reflect-metadata';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { DataSource } from 'typeorm';
-import type { QueryDeepPartialEntity } from 'typeorm/query-builder/QueryPartialEntity';
-import { Experience, Project, SiteContent, TechGroup } from './entities';
-import { getDataSourceOptions } from './options';
+import { createDatabase, type Database } from './database';
+import { experiences, projects, siteContent, techGroups } from './schema';
 
 type SeedData = {
   site: Record<string, unknown>;
-  experiences: Partial<Experience>[];
-  techGroups: Partial<TechGroup>[];
-  projects: Partial<Project>[];
+  experiences: (typeof experiences.$inferInsert)[];
+  techGroups: (typeof techGroups.$inferInsert)[];
+  projects: (typeof projects.$inferInsert)[];
 };
 
-export async function seed(dataSource: DataSource): Promise<void> {
+export async function seed(db: Database): Promise<void> {
   const data = JSON.parse(
     readFileSync(join(__dirname, 'seed-data.json'), 'utf8'),
   ) as SeedData;
-  await dataSource.transaction(async (manager) => {
-    await manager
-      .createQueryBuilder()
-      .insert()
-      .into(SiteContent)
-      .values({ id: 1, data: data.site } as QueryDeepPartialEntity<SiteContent>)
-      .orIgnore()
-      .execute();
-    await manager
-      .createQueryBuilder()
-      .insert()
-      .into(Experience)
-      .values(data.experiences)
-      .orIgnore()
-      .execute();
-    await manager
-      .createQueryBuilder()
-      .insert()
-      .into(TechGroup)
-      .values(data.techGroups)
-      .orIgnore()
-      .execute();
-    await manager
-      .createQueryBuilder()
-      .insert()
-      .into(Project)
-      .values(data.projects as QueryDeepPartialEntity<Project>[])
-      .orIgnore()
-      .execute();
+  await db.transaction(async (tx) => {
+    await tx
+      .insert(siteContent)
+      .values({ id: 1, data: data.site })
+      .onConflictDoNothing();
+    await tx.insert(experiences).values(data.experiences).onConflictDoNothing();
+    await tx.insert(techGroups).values(data.techGroups).onConflictDoNothing();
+    await tx.insert(projects).values(data.projects).onConflictDoNothing();
   });
 }
 
 async function main(): Promise<void> {
-  const dataSource = new DataSource(getDataSourceOptions());
-  await dataSource.initialize();
+  const db = createDatabase();
   try {
-    await seed(dataSource);
+    await seed(db);
     console.log('Portfolio seed completed. Existing content was preserved.');
   } finally {
-    await dataSource.destroy();
+    await db.$client.end();
   }
 }
 
 if (require.main === module) {
-  void main().catch((error: unknown) => {
-    console.error(error);
+  void main().catch(() => {
+    console.error(
+      'Portfolio seed failed. Check database configuration and migrations.',
+    );
     process.exitCode = 1;
   });
 }

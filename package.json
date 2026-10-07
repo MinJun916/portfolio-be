@@ -17,10 +17,11 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "db:migrate": "node --env-file-if-exists=.env node_modules/typeorm/cli.js migration:run -d dist/database/data-source.js",
+    "db:migrate": "node --env-file-if-exists=.env dist/database/migrate.js",
     "db:seed": "node --env-file-if-exists=.env dist/database/seed.js",
     "admin:create": "node --env-file-if-exists=.env dist/auth/admin.cli.js",
-    "test:integration": "jest --runInBand --testPathIgnorePatterns=/node_modules/ --testRegex=api.integration.spec.ts$"
+    "test:integration": "jest --runInBand --testPathIgnorePatterns=/node_modules/ --testRegex=integration.spec.ts$",
+    "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",
@@ -29,12 +30,11 @@
     "@nestjs/platform-express": "^11.0.1",
     "@nestjs/swagger": "^11.4.7",
     "@nestjs/throttler": "^6.7.1",
-    "@nestjs/typeorm": "^11.0.3",
+    "drizzle-orm": "^0.45.3",
     "nestjs-zod": "^5.5.0",
     "pg": "^8.23.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
-    "typeorm": "^0.3.31",
     "zod": "^4.6.5"
   },
   "devDependencies": {
@@ -46,6 +46,7 @@
     "@types/jest": "^30.0.0",
     "@types/node": "^24.0.0",
     "@types/pg": "^8.23.1",
+    "drizzle-kit": "^0.31.11",
     "eslint": "^9.18.0",
     "eslint-config-prettier": "^10.0.1",
     "eslint-plugin-prettier": "^5.2.2",
@@ -77,7 +78,7 @@
     "coverageDirectory": "../coverage",
     "testEnvironment": "node",
     "testPathIgnorePatterns": [
-      "api.integration.spec.ts"
+      "integration.spec.ts"
     ]
   },
   "overrides": {

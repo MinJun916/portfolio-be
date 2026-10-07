@@ -1,22 +1,14 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { AppController } from './app.controller';
-import { AppService } from './app.service';
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from './app.module';
 
-describe('AppController', () => {
-  let appController: AppController;
-
-  beforeEach(async () => {
-    const app: TestingModule = await Test.createTestingModule({
-      controllers: [AppController],
-      providers: [AppService],
-    }).compile();
-
-    appController = app.get<AppController>(AppController);
-  });
-
-  describe('root', () => {
-    it('should return "Hello World!"', () => {
-      expect(appController.getHello()).toBe('Hello World!');
-    });
-  });
+it('serves GET /health without a database', async () => {
+  const app = await NestFactory.create(AppModule, { logger: false });
+  try {
+    await app.listen(0, '127.0.0.1');
+    const response = await fetch(`${await app.getUrl()}/health`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: 'ok' });
+  } finally {
+    await app.close();
+  }
 });

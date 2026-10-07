@@ -1,0 +1,30 @@
+name: portfolio
+
+services:
+  api:
+    image: ${API_IMAGE:?Set API_IMAGE in .env}
+    restart: unless-stopped
+    init: true
+    mem_limit: 256m
+    environment:
+      PORT: 3000
+      NODE_OPTIONS: --max-old-space-size=128
+    ports:
+      - '127.0.0.1:3000:3000'
+    healthcheck:
+      test:
+        [
+          CMD,
+          node,
+          -e,
+          "fetch('http://127.0.0.1:3000/health', {signal: AbortSignal.timeout(3000)}).then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '2'

@@ -1,4 +1,6 @@
 import { NestFactory } from '@nestjs/core';
+import { JwtService } from '@nestjs/jwt';
+import { createHash, randomBytes } from 'node:crypto';
 import type {
   OperationObject,
   ResponseObject,
@@ -38,11 +40,18 @@ type Envelope<T> = {
   error: { code: string; message: string; details?: unknown[] };
 };
 
+type LoginResponse = {
+  accessToken: string;
+  tokenType: 'Bearer';
+  expiresIn: number;
+  admin: { id: string; email: string };
+};
+
 describe('실제 PostgreSQL API 계약', () => {
   let app: NestExpressApplication;
   let db: DataSource;
   let base: string;
-  let cookie = '';
+  let token = '';
   const origin = 'http://localhost:3000';
   const password = 'integration-password-only';
 
@@ -50,13 +59,23 @@ describe('실제 PostgreSQL API 계약', () => {
     path: string,
     method = 'GET',
     body?: unknown,
-    options: { cookie?: string; origin?: string; raw?: boolean } = {},
+    options: {
+      token?: string;
+      authorization?: string;
+      cookie?: string;
+      origin?: string;
+      raw?: boolean;
+    } = {},
   ) {
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
     if (options.origin !== '') headers.Origin = options.origin ?? origin;
-    if (options.cookie ?? cookie) headers.Cookie = options.cookie ?? cookie;
+    if (options.token ?? token)
+      headers.Authorization = `Bearer ${options.token ?? token}`;
+    if (options.authorization !== undefined)
+      headers.Authorization = options.authorization;
+    if (options.cookie) headers.Cookie = options.cookie;
     const response = await fetch(`${base}${path}`, {
       method,
       headers,
@@ -82,7 +101,8 @@ describe('실제 PostgreSQL API 계약', () => {
       );
     }
     process.env.DATABASE_URL = url;
-    process.env.ADMIN_ORIGINS = origin;
+    process.env.CORS_ORIGINS = origin;
+    process.env.JWT_SECRET = '0123456789abcdef'.repeat(4);
     db = await new DataSource(getDataSourceOptions()).initialize();
     await db.runMigrations();
     await db.query(
@@ -109,6 +129,11 @@ describe('실제 PostgreSQL API 계약', () => {
   });
 
   it('초기 데이터와 응답을 검증하고 재시드가 편집 내용을 덮어쓰지 않는다', async () => {
+    const history = await db.query<{ name: string }[]>(
+      'SELECT name FROM migrations ORDER BY id',
+    );
+    expect(history).toEqual([{ name: 'InitialSchema1780857600000' }]);
+    expect(await db.runMigrations()).toEqual([]);
     const health = await request('/health');
     expect(health.body).toEqual({ success: true, data: { status: 'ok' } });
     const home = await request<HomeResponse>('/api/v1/home');
@@ -141,35 +166,141 @@ describe('실제 PostgreSQL API 계약', () => {
     expect(await db.getRepository(Project).count()).toBe(6);
   });
 
-  it('인증·Origin·로그인 실패 응답과 HttpOnly 쿠키를 검증한다', async () => {
+  it('Bearer JWT 인증과 Origin 없는 요청·로그인 실패 응답을 검증한다', async () => {
     expect((await request('/api/v1/admin/projects')).status).toBe(401);
     const wrongOrigin = await request(
       '/api/v1/admin/auth/login',
       'POST',
-      { email: 'admin@example.com', password },
+      { email: 'admin@example.com', password: 'wrong' },
       { origin: 'https://evil.example' },
     );
-    expect(wrongOrigin.status).toBe(403);
-    expect(wrongOrigin.body.error.code).toBe('FORBIDDEN');
+    expect(wrongOrigin.status).toBe(401);
+    expect(wrongOrigin.body.error.code).toBe('UNAUTHORIZED');
     const wrong = await request('/api/v1/admin/auth/login', 'POST', {
       email: 'admin@example.com',
       password: 'wrong',
     });
     expect(wrong.status).toBe(401);
     expect(wrong.body.error.code).toBe('UNAUTHORIZED');
-    const login = await request('/api/v1/admin/auth/login', 'POST', {
-      email: 'admin@example.com',
-      password,
-    });
+    const login = await request<LoginResponse>(
+      '/api/v1/admin/auth/login',
+      'POST',
+      { email: 'admin@example.com', password },
+      { origin: '' },
+    );
     expect(login.status).toBe(200);
-    expect(login.cookie).toContain('HttpOnly');
-    expect(login.cookie).toContain('SameSite=Lax');
-    cookie = login.cookie!.split(';')[0];
+    expect(login.cookie).toBeNull();
+    expect(login.body.data.tokenType).toBe('Bearer');
+    expect(login.body.data.expiresIn).toBe(28800);
+    expect(login.body.data.admin.email).toBe('admin@example.com');
+    token = login.body.data.accessToken;
+    const claims = app
+      .get(JwtService)
+      .verify<{ sub: string; jti: string; exp: number; iat: number }>(token);
+    expect(claims.sub).toBe(login.body.data.admin.id);
+    expect(claims.exp - claims.iat).toBe(28800);
+    expect(claims.jti).toBeTruthy();
     expect((await request('/api/v1/admin/auth/me')).body.data.email).toBe(
       'admin@example.com',
     );
     const stored = await db.getRepository(AdminSession).find();
-    expect(stored[0].tokenHash).not.toContain(cookie.split('=')[1]);
+    expect(stored[0].tokenHash).toBe(
+      createHash('sha256').update(token).digest('hex'),
+    );
+    expect(
+      (
+        await request('/api/v1/admin/auth/me', 'GET', undefined, {
+          token: '',
+          cookie: `portfolio_admin=${token}`,
+        })
+      ).status,
+    ).toBe(401);
+    for (const authorization of [
+      'Basic ' + token,
+      'Bearer',
+      'Bearer ' + token + ' extra',
+      'Bearer ' + 'x'.repeat(4097),
+    ]) {
+      expect(
+        (
+          await request('/api/v1/admin/auth/me', 'GET', undefined, {
+            authorization,
+          })
+        ).status,
+      ).toBe(401);
+    }
+    expect(
+      (
+        await request('/api/v1/admin/auth/me', 'GET', undefined, {
+          authorization: `bearer ${token}`,
+          origin: '',
+        })
+      ).status,
+    ).toBe(200);
+  });
+
+  it('DB에 등록돼도 서명·만료·발급자·대상·claims가 잘못된 JWT를 거절한다', async () => {
+    const jwt = app.get(JwtService);
+    const account = await db
+      .getRepository(AdminAccount)
+      .findOneByOrFail({ email: 'admin@example.com' });
+    const payload = {
+      sub: account.id,
+      jti: randomBytes(32).toString('base64url'),
+    };
+    const invalidTokens = [
+      jwt.sign(payload, { secret: 'another-test-secret-0123456789abcdef' }),
+      jwt.sign(payload, { expiresIn: -1 }),
+      jwt.sign(payload, { issuer: 'another-issuer' }),
+      jwt.sign(payload, { audience: 'another-audience' }),
+      jwt.sign(payload, { algorithm: 'HS384' }),
+      jwt.sign({ ...payload, sub: 'not-a-uuid' }),
+      jwt.sign({ sub: account.id }),
+      new JwtService({ secret: process.env.JWT_SECRET }).sign(payload, {
+        algorithm: 'HS256',
+        issuer: 'portfolio-api',
+        audience: 'portfolio-admin',
+      }),
+      randomBytes(32).toString('base64url'),
+    ];
+    for (const invalid of invalidTokens) {
+      const hash = createHash('sha256').update(invalid).digest('hex');
+      await db.getRepository(AdminSession).insert({
+        tokenHash: hash,
+        adminId: account.id,
+        expiresAt: new Date(Date.now() + 3600000),
+      });
+      try {
+        expect(
+          (
+            await request('/api/v1/admin/auth/me', 'GET', undefined, {
+              token: invalid,
+            })
+          ).status,
+        ).toBe(401);
+      } finally {
+        await db.getRepository(AdminSession).delete({ tokenHash: hash });
+      }
+    }
+    const foreign = await db.getRepository(AdminAccount).save({
+      email: 'foreign@example.com',
+      passwordHash: account.passwordHash,
+      isActive: true,
+    });
+    const validHash = createHash('sha256').update(token).digest('hex');
+    await db
+      .getRepository(AdminSession)
+      .update(validHash, { adminId: foreign.id });
+    expect((await request('/api/v1/admin/auth/me')).status).toBe(401);
+    await db
+      .getRepository(AdminSession)
+      .update(validHash, { adminId: account.id });
+    await db.getRepository(AdminAccount).delete(foreign.id);
+    await db
+      .getRepository(AdminAccount)
+      .update(account.id, { isActive: false });
+    expect((await request('/api/v1/admin/auth/me')).status).toBe(401);
+    await db.getRepository(AdminAccount).update(account.id, { isActive: true });
   });
 
   it('프로젝트 공개·버전 충돌·입력 거절·삭제 동작을 검증한다', async () => {
@@ -190,20 +321,11 @@ describe('실제 PostgreSQL API 계약', () => {
     expect((await request('/api/v1/projects/integration-project')).status).toBe(
       404,
     );
-    expect(
-      (
-        await request(
-          `/api/v1/admin/projects/${project.id}`,
-          'PATCH',
-          { version: 1, isPublished: true },
-          { origin: '' },
-        )
-      ).status,
-    ).toBe(403);
     const updated = await request<ProjectDto>(
       `/api/v1/admin/projects/${project.id}`,
       'PATCH',
       { version: 1, title: '공개 프로젝트', isPublished: true },
+      { origin: '' },
     );
     expect(updated.status).toBe(200);
     expect(updated.body.data.version).toBe(2);
@@ -377,7 +499,7 @@ describe('실제 PostgreSQL API 계약', () => {
     ).toBe(409);
   });
 
-  it('Swagger가 실제 성공/오류·쿠키 인증·중첩 입력 스키마를 문서화한다', async () => {
+  it('Swagger가 실제 성공/오류·Bearer 인증·중첩 입력 스키마를 문서화한다', async () => {
     const response = await fetch(`${base}/docs-json`);
     const doc = (await response.json()) as ReturnType<typeof configureApp>;
     const schemas = doc.components!.schemas!;
@@ -394,10 +516,15 @@ describe('실제 PostgreSQL API 계약', () => {
       }
     };
     checkRefs(doc);
-    expect(doc.components!.securitySchemes!.adminSession).toMatchObject({
-      in: 'cookie',
-      name: 'portfolio_admin',
+    expect(doc.components!.securitySchemes!.adminBearer).toMatchObject({
+      type: 'http',
+      scheme: 'bearer',
+      bearerFormat: 'JWT',
     });
+    expect(doc.components!.securitySchemes!.adminSession).toBeUndefined();
+    expect(doc.paths['/api/v1/admin/projects'].post!.security).toEqual([
+      { adminBearer: [] },
+    ]);
     expect(
       doc.paths['/api/v1/admin/projects'].post!.responses['201'],
     ).toBeDefined();
@@ -412,6 +539,11 @@ describe('실제 PostgreSQL API 계약', () => {
         if (!['get', 'post', 'patch', 'delete'].includes(method)) continue;
         const spec = operation as OperationObject;
         expect(spec.summary).toBeTruthy();
+        expect(
+          spec.parameters?.some(
+            (parameter) => 'name' in parameter && parameter.name === 'Origin',
+          ),
+        ).not.toBe(true);
         if (spec.responses['200'] || spec.responses['201']) {
           const success = (spec.responses['200'] ??
             spec.responses['201']) as ResponseObject;
@@ -451,11 +583,15 @@ describe('실제 PostgreSQL API 계약', () => {
       .getRepository(AdminSession)
       .update(expires.tokenHash, { expiresAt: new Date(0) });
     expect((await request('/api/v1/admin/auth/me')).status).toBe(401);
-    const login = await request('/api/v1/admin/auth/login', 'POST', {
-      email: 'admin@example.com',
-      password,
-    });
-    cookie = login.cookie!.split(';')[0];
+    const login = await request<LoginResponse>(
+      '/api/v1/admin/auth/login',
+      'POST',
+      {
+        email: 'admin@example.com',
+        password,
+      },
+    );
+    token = login.body.data.accessToken;
     const changed = await request('/api/v1/admin/auth/password', 'PATCH', {
       currentPassword: password,
       newPassword: 'replacement-test-password',
@@ -463,11 +599,15 @@ describe('실제 PostgreSQL API 계약', () => {
     expect(changed.status).toBe(200);
     expect((await request('/api/v1/admin/auth/me')).status).toBe(401);
     expect(await db.getRepository(AdminSession).count()).toBe(0);
-    const relogin = await request('/api/v1/admin/auth/login', 'POST', {
-      email: 'admin@example.com',
-      password: 'replacement-test-password',
-    });
-    cookie = relogin.cookie!.split(';')[0];
+    const relogin = await request<LoginResponse>(
+      '/api/v1/admin/auth/login',
+      'POST',
+      {
+        email: 'admin@example.com',
+        password: 'replacement-test-password',
+      },
+    );
+    token = relogin.body.data.accessToken;
     expect((await request('/api/v1/admin/auth/logout', 'POST')).status).toBe(
       200,
     );

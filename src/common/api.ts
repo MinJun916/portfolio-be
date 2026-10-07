@@ -1,10 +1,5 @@
 import { applyDecorators, Type } from '@nestjs/common';
-import {
-  ApiExtraModels,
-  ApiHeader,
-  ApiResponse,
-  getSchemaPath,
-} from '@nestjs/swagger';
+import { ApiExtraModels, ApiResponse, getSchemaPath } from '@nestjs/swagger';
 import { createZodDto } from 'nestjs-zod';
 import { z } from 'zod';
 
@@ -48,7 +43,6 @@ export function ApiResult(
 const errors: Record<number, string> = {
   400: 'BAD_REQUEST: 입력 형식 또는 값이 올바르지 않습니다.',
   401: 'UNAUTHORIZED: 로그인 정보가 없거나 만료되었습니다.',
-  403: 'FORBIDDEN: 허용되지 않은 Origin입니다.',
   404: 'NOT_FOUND: 요청한 콘텐츠가 없습니다.',
   409: 'CONFLICT: 중복 값 또는 다른 수정과의 버전 충돌입니다.',
   413: 'PAYLOAD_TOO_LARGE: 요청 본문이 1MB를 초과했습니다.',
@@ -68,11 +62,3 @@ export function ApiErrors(...statuses: number[]) {
     ),
   );
 }
-
-export const ApiWriteOrigin = () =>
-  ApiHeader({
-    name: 'Origin',
-    required: true,
-    description:
-      'ADMIN_ORIGINS에 등록된 관리자 Origin. 쿠키 인증 쓰기 요청에 필수입니다.',
-  });

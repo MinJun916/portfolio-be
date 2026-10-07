@@ -8,11 +8,12 @@ Swagger UI는 `/docs`, OpenAPI JSON은 `/docs-json`입니다. DTO 검증과 Swag
 Node.js 24, PostgreSQL 18을 사용합니다. `.env.example`을 `.env`로 복사하고 DB 비밀번호를 임의 값으로 교체합니다.
 `POSTGRES_PASSWORD`와 `DATABASE_URL`의 비밀번호를 맞추세요. 비밀번호에 특수 문자가 있으면 URL 부분을 인코딩합니다.
 로컬 Node 실행에서는 `DATABASE_URL` 호스트를 `127.0.0.1`, Compose API에서는 `db`로 설정합니다.
+`JWT_SECRET`은 `openssl rand -hex 32`로 생성한 값으로 교체하세요. 최소 32바이트이며 기본 키는 없습니다.
 
 ```bash
 cp .env.example .env
 chmod 600 .env
-# .env의 DB 설정을 먼저 편집
+# .env의 DB 설정과 JWT_SECRET을 먼저 편집
 npm ci
 docker compose up -d --wait db
 npm run build
@@ -39,14 +40,42 @@ unset ADMIN_PASSWORD
 # npm run admin:create -- --reset
 ```
 
-로그인 `POST /api/v1/admin/auth/login`에 `{ "email": "admin@example.com", "password": "입력한 비밀번호" }`를 전송하면 HttpOnly 세션 쿠키를 받습니다.
-세션은 8시간 후 만료됩니다. 운영 HTTPS에서는 Secure 쿠키를 사용하며, 비밀번호 변경/초기화는 모든 세션을 폐기합니다.
+로그인 `POST /api/v1/admin/auth/login`에 `{ "email": "admin@example.com", "password": "입력한 비밀번호" }`를 전송하면 다음 응답을 받습니다.
+
+```json
+{
+  "success": true,
+  "data": {
+    "accessToken": "JWT",
+    "tokenType": "Bearer",
+    "expiresIn": 28800,
+    "admin": { "id": "UUID", "email": "admin@example.com" }
+  }
+}
+```
+
+관리자 API에는 `Authorization: Bearer <accessToken>`을 전달합니다. 쿠키와 필수 Origin 검사는 사용하지 않습니다.
+JWT는 HS256 서명·발급자·대상·만료를 검증하고 8시간 후 만료됩니다. DB에는 토큰 해시만 저장해 로그아웃 시 현재 토큰, 비밀번호 변경/초기화 시 모든 토큰을 즉시 폐기합니다. 별도 refresh API는 없습니다.
 IP당 로그인 시도는 1분에 5회로 제한합니다. 단일 API 프로세스의 메모리 제한이므로 인스턴스를 늘리면 공유 저장소로 변경해야 합니다.
 
-`ADMIN_ORIGINS`에는 Swagger가 열리는 API Origin과 이후 관리자 Origin을 쉼표로 구분해 정확히 지정합니다.
-예: `https://api.example.com,https://admin.example.com`. 로그인과 모든 관리자 쓰기 요청에는 이 목록에 포함된 `Origin` 헤더가 필수입니다.
-Swagger에서는 로그인 API를 먼저 실행하면 이후 요청에 쿠키를 사용합니다. HttpOnly 쿠키를 Authorize 입력란에 붙여 넣을 필요가 없습니다.
-운영 관리자와 API는 같은 사이트의 HTTPS 도메인을 사용합니다(SameSite=Lax). 현재 프론트는 API를 호출하지 않습니다.
+`CORS_ORIGINS`에는 브라우저에서 API를 호출할 프론트 Origin을 쉼표로 구분해 정확히 지정합니다.
+예: `https://www.example.com,https://admin.example.com`. CORS 설정은 관리자 인증과 별개이며 Origin이 없는 CLI 요청도 JWT로 인증합니다. API와 같은 Origin에서 여는 Swagger는 추가 등록이 필요 없습니다.
+Swagger에서는 로그인 API를 실행한 뒤 응답의 `accessToken`을 **Authorize**에 입력하세요(`Bearer` 접두어 제외). 현재 프론트는 API를 호출하지 않습니다.
+
+## DB 마이그레이션
+
+TypeORM migration으로 스키마 변경을 관리합니다. `migrations` 테이블에 적용된 migration 이름·버전(timestamp)을 기록하고 미적용 파일만 순서대로 실행합니다.
+현재 초기 migration은 `src/database/1780857600000-InitialSchema.ts`입니다. `synchronize: false`이므로 API 실행만으로 테이블을 임의 변경하지 않습니다.
+
+```bash
+npm run build
+npm run db:migrate
+```
+
+같은 명령을 다시 실행해도 적용된 migration은 반복하지 않습니다. 기본 트랜잭션에서 실패한 migration의 DDL과 이력 기록을 롤백합니다.
+배포 워크플로우도 DB 준비 → 새 이미지로 migration → API 교체 순서이며 migration이 실패하면 API 교체를 중단합니다.
+스키마 변경 시 기존 migration은 수정하지 않고 새 `MigrationInterface` 파일을 추가한 뒤 `src/database/options.ts`의 `migrations` 목록에 등록합니다. TypeORM은 Flyway의 checksum 검증 기능까지 제공하지 않으므로 실행된 파일은 유지합니다.
+JWT 전환은 기존 `admin_sessions` 구조를 그대로 사용해 추가 스키마 변경이 없습니다. 초기 데이터와 관리자 생성은 별도 명령으로 실행합니다.
 
 ## API 계약
 
@@ -71,7 +100,7 @@ Swagger에서는 로그인 API를 먼저 실행하면 이후 요청에 쿠키를
 제공한 객체/배열은 필드 전체를 교체하고 생략한 필드는 유지합니다. 공개 중인 항목을 수정하면 즉시 반영됩니다. DELETE는 영구 삭제입니다.
 프로젝트 슬러그는 생성 이후 변경할 수 없습니다. 상세 템플릿은 `case-study`, `changelog`, `none`이며 본문이 해당 스키마와 일치해야 합니다.
 본문은 순서 있는 문단/목록과 `**강조**` 문자열을 유지합니다. 임의 HTML·새 화면 템플릿은 실행하지 않습니다. 요청 본문 한도는 1MB입니다.
-400 입력 오류, 401 인증 오류, 403 Origin 거절, 404 없음, 409 충돌, 413 본문 초과, 429 요청 제한, 503 DB 연결 오류를 구분합니다.
+400 입력 오류, 401 인증 오류, 404 없음, 409 충돌, 413 본문 초과, 429 요청 제한, 503 DB 연결 오류를 구분합니다.
 전체 필드·필수 여부·성공/오류 응답은 Swagger를 확인하세요.
 
 ## 검증
@@ -84,7 +113,7 @@ npx eslint src --no-fix
 TEST_DATABASE_URL=postgresql://USER:PASSWORD@127.0.0.1:5432/portfolio_test npm run test:integration
 ```
 
-테스트는 실제 PostgreSQL에서 인증, CRUD, 공개 필터, 버전 충돌, 순서 변경의 롤백, 재시드 보존, 동시 비밀번호 변경, Swagger 참조와 응답 계약을 확인합니다.
+테스트는 실제 PostgreSQL에서 JWT 서명/만료/claims, 토큰 폐기, CRUD, 공개 필터, 버전 충돌, 순서 변경의 롤백, 재시드 보존, migration 중복 실행 방지, 동시 비밀번호 변경, Swagger 참조와 응답 계약을 확인합니다.
 운영 의존성은 NestJS 11을 유지하며 Swagger의 js-yaml을 5.4.3으로 고정해 알려진 YAML 처리 취약점을 해결합니다.
 
 ## 자동 배포
@@ -167,7 +196,7 @@ x86 서버에 Docker Engine과 Compose 플러그인을 설치하고, 같은 디�
 
 ```bash
 [ -f .env ] || cp .env.example .env
-# .env에 API_IMAGE, DB 비밀번호/DATABASE_URL, 관리자 Origin 설정
+# .env에 API_IMAGE, DB 비밀번호/DATABASE_URL, JWT_SECRET, CORS_ORIGINS 설정
 chmod 600 .env
 sudo docker compose pull
 sudo docker compose up -d --wait db

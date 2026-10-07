@@ -15,6 +15,14 @@ export class PasswordDto extends createZodDto(
 export class AdminDto extends createZodDto(
   z.object({ id: z.uuid(), email: z.email() }),
 ) {}
+export class LoginResultDto extends createZodDto(
+  z.object({
+    accessToken: z.string(),
+    tokenType: z.literal('Bearer'),
+    expiresIn: z.literal(28800),
+    admin: AdminDto.schema,
+  }),
+) {}
 export class AuthResultDto extends createZodDto(
   z.object({ message: z.string() }),
 ) {}

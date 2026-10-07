@@ -11,14 +11,14 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import {
-  ApiCookieAuth,
+  ApiBearerAuth,
   ApiOperation,
   ApiParam,
   ApiQuery,
   ApiTags,
 } from '@nestjs/swagger';
 import { AdminGuard } from '../auth/admin.guard';
-import { ApiErrors, ApiResult, ApiWriteOrigin } from '../common/api';
+import { ApiErrors, ApiResult } from '../common/api';
 import { Experience, Project, TechGroup } from '../database/entities';
 import {
   CreateExperienceDto,
@@ -39,7 +39,7 @@ import {
 import { ContentService } from './content.service';
 
 @ApiTags('관리자 콘텐츠')
-@ApiCookieAuth('adminSession')
+@ApiBearerAuth('adminBearer')
 @UseGuards(AdminGuard)
 @Controller('api/v1/admin')
 export class AdminContentController {
@@ -57,14 +57,13 @@ export class AdminContentController {
   }
 
   @Patch('site')
-  @ApiWriteOrigin()
   @ApiOperation({
     summary: '사이트 콘텐츠 교체',
     description:
       'data 전체를 교체하고 버전을 1 증가시킵니다. 현재 버전이 다르면 409를 반환합니다.',
   })
   @ApiResult(SiteDto)
-  @ApiErrors(400, 401, 403, 404, 409, 500)
+  @ApiErrors(400, 401, 404, 409, 500)
   patchSite(@Body() body: PatchSiteDto) {
     return this.content.patchSite(body);
   }
@@ -81,27 +80,25 @@ export class AdminContentController {
   }
 
   @Post('experiences')
-  @ApiWriteOrigin()
   @ApiOperation({
     summary: '경험 생성',
     description:
       '새 경험 콘텐츠를 생성합니다. 기본값은 비공개이며 중첩 배열의 순서를 보존합니다.',
   })
   @ApiResult(ExperienceDto, { status: 201 })
-  @ApiErrors(400, 401, 403, 409, 500)
+  @ApiErrors(400, 401, 409, 500)
   createExperience(@Body() body: CreateExperienceDto) {
     return this.content.create(Experience, body);
   }
 
   @Patch('experiences/order')
-  @ApiWriteOrigin()
   @ApiOperation({
     summary: '경험 표시 순서 변경',
     description:
       '비공개 항목을 포함한 현재 전체 목록의 ID와 버전을 원하는 순서로 전달합니다. 모든 항목의 sortOrder와 버전을 한 트랜잭션에서 변경합니다. ID 중복·누락은 400, 버전 충돌은 409입니다.',
   })
   @ApiResult(ExperienceDto, { array: true })
-  @ApiErrors(400, 401, 403, 409, 500)
+  @ApiErrors(400, 401, 409, 500)
   reorderExperiences(@Body() body: ReorderDto) {
     return this.content.reorder(Experience, body);
   }
@@ -119,7 +116,6 @@ export class AdminContentController {
   }
 
   @Patch('experiences/:id')
-  @ApiWriteOrigin()
   @ApiOperation({
     summary: '경험 수정',
     description:
@@ -127,7 +123,7 @@ export class AdminContentController {
   })
   @ApiParam({ name: 'id', description: '경험 UUID', format: 'uuid' })
   @ApiResult(ExperienceDto)
-  @ApiErrors(400, 401, 403, 404, 409, 500)
+  @ApiErrors(400, 401, 404, 409, 500)
   patchExperience(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: PatchExperienceDto,
@@ -136,7 +132,6 @@ export class AdminContentController {
   }
 
   @Delete('experiences/:id')
-  @ApiWriteOrigin()
   @ApiOperation({
     summary: '경험 삭제',
     description:
@@ -151,7 +146,7 @@ export class AdminContentController {
     example: '1',
   })
   @ApiResult(DeleteResultDto)
-  @ApiErrors(400, 401, 403, 404, 409, 500)
+  @ApiErrors(400, 401, 404, 409, 500)
   deleteExperience(
     @Param('id', ParseUUIDPipe) id: string,
     @Query() query: DeleteQueryDto,
@@ -171,27 +166,25 @@ export class AdminContentController {
   }
 
   @Post('tech-groups')
-  @ApiWriteOrigin()
   @ApiOperation({
     summary: '기술 그룹 생성',
     description:
       '새 기술 그룹 콘텐츠를 생성합니다. 기본값은 비공개이며 중첩 배열의 순서를 보존합니다.',
   })
   @ApiResult(TechGroupDto, { status: 201 })
-  @ApiErrors(400, 401, 403, 409, 500)
+  @ApiErrors(400, 401, 409, 500)
   createTechGroup(@Body() body: CreateTechGroupDto) {
     return this.content.create(TechGroup, body);
   }
 
   @Patch('tech-groups/order')
-  @ApiWriteOrigin()
   @ApiOperation({
     summary: '기술 그룹 표시 순서 변경',
     description:
       '비공개 항목을 포함한 현재 전체 목록의 ID와 버전을 원하는 순서로 전달합니다. 모든 항목의 sortOrder와 버전을 한 트랜잭션에서 변경합니다. ID 중복·누락은 400, 버전 충돌은 409입니다.',
   })
   @ApiResult(TechGroupDto, { array: true })
-  @ApiErrors(400, 401, 403, 409, 500)
+  @ApiErrors(400, 401, 409, 500)
   reorderTechGroups(@Body() body: ReorderDto) {
     return this.content.reorder(TechGroup, body);
   }
@@ -209,7 +202,6 @@ export class AdminContentController {
   }
 
   @Patch('tech-groups/:id')
-  @ApiWriteOrigin()
   @ApiOperation({
     summary: '기술 그룹 수정',
     description:
@@ -217,7 +209,7 @@ export class AdminContentController {
   })
   @ApiParam({ name: 'id', description: '기술 그룹 UUID', format: 'uuid' })
   @ApiResult(TechGroupDto)
-  @ApiErrors(400, 401, 403, 404, 409, 500)
+  @ApiErrors(400, 401, 404, 409, 500)
   patchTechGroup(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: PatchTechGroupDto,
@@ -226,7 +218,6 @@ export class AdminContentController {
   }
 
   @Delete('tech-groups/:id')
-  @ApiWriteOrigin()
   @ApiOperation({
     summary: '기술 그룹 삭제',
     description:
@@ -241,7 +232,7 @@ export class AdminContentController {
     example: '1',
   })
   @ApiResult(DeleteResultDto)
-  @ApiErrors(400, 401, 403, 404, 409, 500)
+  @ApiErrors(400, 401, 404, 409, 500)
   deleteTechGroup(
     @Param('id', ParseUUIDPipe) id: string,
     @Query() query: DeleteQueryDto,
@@ -261,27 +252,25 @@ export class AdminContentController {
   }
 
   @Post('projects')
-  @ApiWriteOrigin()
   @ApiOperation({
     summary: '프로젝트 생성',
     description:
       '새 프로젝트 콘텐츠를 생성합니다. 기본값은 비공개이며 중첩 배열의 순서를 보존합니다.',
   })
   @ApiResult(ProjectDto, { status: 201 })
-  @ApiErrors(400, 401, 403, 409, 500)
+  @ApiErrors(400, 401, 409, 500)
   createProject(@Body() body: CreateProjectDto) {
     return this.content.create(Project, body);
   }
 
   @Patch('projects/order')
-  @ApiWriteOrigin()
   @ApiOperation({
     summary: '프로젝트 표시 순서 변경',
     description:
       '비공개 항목을 포함한 현재 전체 목록의 ID와 버전을 원하는 순서로 전달합니다. 모든 항목의 sortOrder와 버전을 한 트랜잭션에서 변경합니다. ID 중복·누락은 400, 버전 충돌은 409입니다.',
   })
   @ApiResult(ProjectDto, { array: true })
-  @ApiErrors(400, 401, 403, 409, 500)
+  @ApiErrors(400, 401, 409, 500)
   reorderProjects(@Body() body: ReorderDto) {
     return this.content.reorder(Project, body);
   }
@@ -299,7 +288,6 @@ export class AdminContentController {
   }
 
   @Patch('projects/:id')
-  @ApiWriteOrigin()
   @ApiOperation({
     summary: '프로젝트 수정',
     description:
@@ -307,7 +295,7 @@ export class AdminContentController {
   })
   @ApiParam({ name: 'id', description: '프로젝트 UUID', format: 'uuid' })
   @ApiResult(ProjectDto)
-  @ApiErrors(400, 401, 403, 404, 409, 500)
+  @ApiErrors(400, 401, 404, 409, 500)
   patchProject(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: PatchProjectDto,
@@ -316,7 +304,6 @@ export class AdminContentController {
   }
 
   @Delete('projects/:id')
-  @ApiWriteOrigin()
   @ApiOperation({
     summary: '프로젝트 삭제',
     description:
@@ -331,7 +318,7 @@ export class AdminContentController {
     example: '1',
   })
   @ApiResult(DeleteResultDto)
-  @ApiErrors(400, 401, 403, 404, 409, 500)
+  @ApiErrors(400, 401, 404, 409, 500)
   deleteProject(
     @Param('id', ParseUUIDPipe) id: string,
     @Query() query: DeleteQueryDto,

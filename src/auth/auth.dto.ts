@@ -9,7 +9,7 @@ export class LoginDto extends createZodDto(credentialsSchema) {}
 export class PasswordDto extends createZodDto(
   z.strictObject({
     currentPassword: z.string().min(1).max(128),
-    newPassword: z.string().min(12).max(128).describe('12~128자 새 비밀번호'),
+    newPassword: z.string().min(6).max(128).describe('6~128자 새 비밀번호'),
   }),
 ) {}
 export class AdminDto extends createZodDto(
